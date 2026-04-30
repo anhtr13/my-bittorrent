@@ -1,27 +1,16 @@
-mod bencoding;
+mod bittorent;
 
-use std::env;
+use clap::Parser;
 
-use anyhow::Result;
+use crate::bittorent::Cli;
 
-use crate::bencoding::Bencoding;
+fn main() {
+    let cli = Cli::parse();
 
-fn main() -> Result<()> {
-    let args: Vec<String> = env::args().collect();
-    let command = &args[1];
+    eprintln!("Logs from program:");
 
-    if command == "decode" {
-        eprintln!("Logs from program:");
-
-        let encoded_value = &args[2];
-        let Some(decoded_value) = Bencoding::decode(&mut encoded_value.chars())? else {
-            anyhow::bail!("decode failed");
-        };
-
-        println!("{}", decoded_value);
-    } else {
-        println!("unknown command: {}", args[1])
+    match cli.run() {
+        Ok(_) => {}
+        Err(e) => eprintln!("Error: {e}"),
     }
-
-    Ok(())
 }
