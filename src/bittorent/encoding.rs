@@ -69,7 +69,7 @@ impl Bencoding {
             }
             b'l' => {
                 let mut list = Vec::new();
-                while cur.get_u8() != b'e' {
+                while cur.try_get_u8()? != b'e' {
                     cur.set_position(cur.position() - 1);
                     list.push(Self::decode_from_cursor(cur).context("failed to parse list")?);
                 }
@@ -77,7 +77,7 @@ impl Bencoding {
             }
             b'd' => {
                 let mut dict = BTreeMap::new();
-                while cur.get_u8() != b'e' {
+                while cur.try_get_u8()? != b'e' {
                     cur.set_position(cur.position() - 1);
                     let Bencoding::String(key) = Self::decode_from_cursor(cur)? else {
                         anyhow::bail!("key in dictionary must be string");
@@ -100,6 +100,40 @@ impl Bencoding {
                 let mut s = vec![0u8; len];
                 cur.read_exact(&mut s).context("failed to parse string")?;
                 return Ok(Self::String(s));
+            }
+        }
+    }
+
+    pub fn encode(&self) -> Vec<u8> {
+        match self {
+            Self::String(s) => {
+                let mut bytes = s.len().to_string().into_bytes();
+                bytes.push(b':');
+                bytes.extend(s);
+                bytes
+            }
+            Self::Integer(i) => {
+                let mut bytes = vec![b'i'];
+                bytes.extend(i.to_string().into_bytes());
+                bytes.push(b'e');
+                bytes
+            }
+            Self::List(l) => {
+                let mut bytes = vec![b'l'];
+                for val in l.into_iter() {
+                    bytes.extend(val.encode());
+                }
+                bytes.push(b'e');
+                bytes
+            }
+            Self::Dictionary(d) => {
+                let mut bytes = vec![b'd'];
+                for (key, val) in d.into_iter() {
+                    bytes.extend(Self::String(key.clone().into_bytes()).encode());
+                    bytes.extend(val.encode());
+                }
+                bytes.push(b'e');
+                bytes
             }
         }
     }

@@ -4,6 +4,7 @@ use std::fs;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use sha1::{Digest, Sha1};
 
 use crate::bittorent::encoding::Bencoding;
 
@@ -44,6 +45,9 @@ impl Cli {
                 let Some(info) = dict.get("info") else {
                     anyhow::bail!("info not found")
                 };
+                let mut encoder = Sha1::new();
+                encoder.update(info.encode());
+                let info_hash = hex::encode(encoder.finalize());
                 let Bencoding::Dictionary(info) = info else {
                     anyhow::bail!("info must be a dictionary")
                 };
@@ -55,6 +59,7 @@ impl Cli {
                 };
                 println!("Tracker URL: {}", str::from_utf8(url)?);
                 println!("Length: {}", length);
+                println!("Info Hash: {}", info_hash);
                 Ok(())
             }
         }
