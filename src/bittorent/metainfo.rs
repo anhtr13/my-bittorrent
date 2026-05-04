@@ -10,8 +10,8 @@ pub struct Info {
     pub length: u64,
     pub name: String,
     pub piece_length: u64,
-    pub pieces: Vec<Vec<u8>>,
-    pub hash: Vec<u8>,
+    pub pieces: Vec<[u8; 20]>,
+    pub hash: [u8; 20],
 }
 
 pub struct MetaInfo {
@@ -34,7 +34,11 @@ impl MetaInfo {
         };
         let mut encoder = Sha1::new();
         encoder.update(info.encode());
-        let info_hash = encoder.finalize().to_vec();
+        let info_hash: [u8; 20] = encoder
+            .finalize()
+            .to_vec()
+            .try_into()
+            .map_err(|_| anyhow::Error::msg("failed to encode info_hash to 20 bytes array"))?;
         let Bencoding::Dictionary(dict) = info else {
             anyhow::bail!("info must be encode as dictionary")
         };
@@ -51,7 +55,15 @@ impl MetaInfo {
         let Some(Bencoding::String(pieces)) = dict.get("pieces") else {
             anyhow::bail!("pieces must be encode as string")
         };
-        let pieces: Vec<_> = pieces.chunks(20).map(|chunk| chunk.to_vec()).collect();
+        let pieces: Result<Vec<_>> = pieces
+            .chunks(20)
+            .map(|chunk| {
+                chunk
+                    .try_into()
+                    .map_err(|_| anyhow::Error::msg("failed to split pieces into 20 bytes arrays"))
+            })
+            .collect();
+        let pieces = pieces?;
         Ok(Self {
             announce,
             info: Info {
