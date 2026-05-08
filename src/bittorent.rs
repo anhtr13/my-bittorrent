@@ -33,7 +33,7 @@ pub enum Command {
     #[command(name = "download_piece")]
     DownloadPiece {
         #[arg(short = 'o', long = "output")]
-        output: String,
+        output: Option<String>,
         torrent: String,
         piece_index: u32,
     },
@@ -41,7 +41,7 @@ pub enum Command {
     #[command(name = "download")]
     Download {
         #[arg(short = 'o', long = "output")]
-        output: String,
+        output: Option<String>,
         torrent: String,
     },
 
@@ -99,25 +99,25 @@ impl Cli {
                 let torrent = Torrent::from_file(&torrent)?;
                 let (_, addrs) =
                     discover_peers(&torrent, 6881, 0, 0, torrent.info.length, true).await?;
-                let mut peers: Vec<_> = establish_peers(&addrs, &torrent.info.hash)
+                let peers: Vec<_> = establish_peers(&addrs, &torrent.info.hash, 4)
                     .await
                     .into_iter()
                     .map(|peer| Arc::new(Mutex::new(peer)))
                     .collect();
-                download_piece(&mut peers, piece_index, &torrent, &output).await?;
+                download_piece(&peers, piece_index, &torrent, output.as_ref()).await?;
                 Ok(())
             }
             Command::Download { output, torrent } => {
                 let torrent = Torrent::from_file(&torrent)?;
                 let (_, addrs) =
                     discover_peers(&torrent, 6881, 0, 0, torrent.info.length, true).await?;
-                let mut peers: Vec<_> = establish_peers(&addrs, &torrent.info.hash)
+                let peers: Vec<_> = establish_peers(&addrs, &torrent.info.hash, 4)
                     .await
                     .into_iter()
                     .map(|peer| Arc::new(Mutex::new(peer)))
                     .collect();
                 for idx in 0..torrent.info.pieces.len() {
-                    download_piece(&mut peers, idx as u32, &torrent, &output).await?;
+                    download_piece(&peers, idx as u32, &torrent, output.as_ref()).await?;
                 }
                 Ok(())
             }

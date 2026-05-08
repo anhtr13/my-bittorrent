@@ -11,7 +11,7 @@ use tokio::{
 
 use crate::bittorent::{encoding::Bencoding, torrent::Torrent};
 
-pub const BLOCK_SIZE: u32 = 16384;
+pub const BLOCK_SIZE: u32 = 16 * 1024;
 
 #[allow(clippy::too_many_arguments)]
 pub async fn discover_peers(
@@ -80,10 +80,10 @@ pub async fn hanshake(stream: &mut TcpStream, info_hash: &[u8]) -> Result<Vec<u8
 }
 
 pub async fn download_piece(
-    peers: &mut [Arc<Mutex<TcpStream>>],
+    peers: &[Arc<Mutex<TcpStream>>],
     piece_index: u32,
     torrent: &Torrent,
-    output: &str,
+    output: Option<&String>,
 ) -> Result<()> {
     let Some(piece_hash) = torrent.info.pieces.get(piece_index as usize) else {
         anyhow::bail!("piece_index out of range");
@@ -93,12 +93,13 @@ pub async fn download_piece(
         .length
         .saturating_sub(torrent.info.piece_length * piece_index as u64)
         .min(torrent.info.piece_length) as u32;
-    let mut num_blocks = piece_length / BLOCK_SIZE;
-    if num_blocks * BLOCK_SIZE < piece_length {
-        num_blocks += 1;
+
+    let mut number_of_blocks = piece_length / BLOCK_SIZE;
+    if number_of_blocks * BLOCK_SIZE < piece_length {
+        number_of_blocks += 1;
     }
 
-    let blocks = Arc::new(Mutex::new(vec![false; num_blocks as usize]));
+    let blocks = Arc::new(Mutex::new(vec![false; number_of_blocks as usize]));
     let piece = Arc::new(Mutex::new(vec![0u8; piece_length as usize]));
     let mut handles = Vec::new();
 
@@ -109,21 +110,23 @@ pub async fn download_piece(
         handles.push(tokio::spawn(async move {
             loop {
                 let mut guard = blocks.lock().await;
-                let Some(idx) = guard.iter().position(|downloaded| !downloaded) else {
+                let Some(block_index) = guard.iter().position(|downloaded| !downloaded) else {
                     break;
                 };
-                guard[idx] = true;
+                guard[block_index] = true;
                 drop(guard);
-                let offset = idx as u32 * BLOCK_SIZE;
+                let offset = block_index as u32 * BLOCK_SIZE;
                 let length = (piece_length - offset).min(BLOCK_SIZE);
                 let (_, data) = download_piece_block(peer.clone(), piece_index, offset, length)
                     .await
-                    .expect("failed to download piece block");
+                    .unwrap_or_else(|_| {
+                        panic!("failed to download block {block_index} from piece {piece_index}")
+                    });
                 let mut piece = piece.lock().await;
                 (*piece)[offset as usize..(offset + length) as usize].copy_from_slice(&data);
                 println!(
-                    "Downloaded block (offset: {}, length: {}) of piece {}",
-                    offset, length, piece_index
+                    "Downloaded from piece {}: (block {}, offset {}, length {})",
+                    piece_index, block_index, offset, length
                 );
             }
         }));
@@ -133,21 +136,22 @@ pub async fn download_piece(
         handle.await?;
     }
 
-    let piece = Arc::try_unwrap(piece)
-        .map_err(|_| anyhow::Error::msg("unwrap Arc failed"))?
+    let piece_data = Arc::try_unwrap(piece)
+        .map_err(|_| anyhow::Error::msg("failed to get piece"))?
         .into_inner();
+
     let mut encoder = Sha1::new();
-    encoder.update(&piece);
-    let hash: [u8; 20] = encoder
+    encoder.update(&piece_data);
+    let checksum: [u8; 20] = encoder
         .finalize()
         .to_vec()
         .try_into()
         .map_err(|_| anyhow::Error::msg("sha1 hash failed"))?;
+    anyhow::ensure!(&checksum == piece_hash, "checksum miss match");
 
-    anyhow::ensure!(&hash == piece_hash, "piece hash miss match");
-
+    let output = output.unwrap_or(&torrent.info.name);
     let mut file = OpenOptions::new().create(true).append(true).open(output)?;
-    file.write_all(&piece)?;
+    file.write_all(&piece_data)?;
 
     Ok(())
 }
@@ -178,11 +182,18 @@ async fn download_piece_block(
     Ok((offset, data))
 }
 
-pub async fn establish_peers(addrs: &[String], info_hash: &[u8]) -> Vec<TcpStream> {
+pub async fn establish_peers(
+    addrs: &[String],
+    info_hash: &[u8],
+    max_peers: usize,
+) -> Vec<TcpStream> {
     let mut peers = Vec::new();
     for addr in addrs {
         if let Ok(peer) = establish_peer(addr, info_hash).await {
             peers.push(peer);
+        }
+        if peers.len() == max_peers {
+            break;
         }
     }
     peers
