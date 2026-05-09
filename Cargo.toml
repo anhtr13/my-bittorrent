@@ -1,5 +1,5 @@
 [package]
-name = "bittorrent-rust"
+name = "my-bittorrent"
 version = "0.1.0"
 authors = ["anhtr13 <github.com/anhtr13>"]
 edition = "2024"

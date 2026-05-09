@@ -8,4 +8,4 @@
 
 set -e # Exit on failure
 
-exec /tmp/codecrafters-build-bittorrent-rust/release/bittorrent-rust "$@"
+exec /tmp/codecrafters-build-bittorrent-rust/release/my-bittorrent "$@"

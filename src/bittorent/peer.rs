@@ -1,11 +1,12 @@
-use std::{fs::OpenOptions, io::Write, sync::Arc};
+use std::{fs::OpenOptions, io::Write, sync::Arc, time::Duration};
 
 use anyhow::Result;
 use rand::{RngExt, distr::Alphanumeric};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
-    sync::Mutex,
+    sync::{Mutex, mpsc},
+    time::sleep,
 };
 
 use crate::bittorent::{encoding::Bencoding, sha1_hash, torrent::Torrent};
@@ -125,17 +126,20 @@ pub async fn download_piece(
                 drop(guard);
                 let offset = block_index as u32 * BLOCK_SIZE;
                 let length = (piece_length - offset).min(BLOCK_SIZE);
-                let (_, data) = download_piece_block(peer.clone(), piece_index, offset, length)
-                    .await
-                    .unwrap_or_else(|_| {
-                        panic!("failed to download block {block_index} from piece {piece_index}")
-                    });
-                let mut piece = piece.lock().await;
-                (*piece)[offset as usize..(offset + length) as usize].copy_from_slice(&data);
-                println!(
-                    "Downloaded from piece {}: {} bytes, offset {}",
-                    piece_index, length, offset
-                );
+                match download_piece_block(peer.clone(), piece_index, offset, length).await {
+                    Ok((_, data)) => {
+                        let mut piece = piece.lock().await;
+                        (*piece)[offset as usize..(offset + length) as usize]
+                            .copy_from_slice(&data);
+                        println!(
+                            "Downloaded from piece {}: {} bytes, offset {}",
+                            piece_index, length, offset
+                        );
+                    }
+                    Err(e) => {
+                        eprintln!("{e}");
+                    }
+                };
             }
         }));
     }
@@ -187,28 +191,47 @@ async fn download_piece_block(
 pub async fn establish_peers(
     addrs: &[Arc<String>],
     info_hash: Arc<[u8]>,
-    max_peers: usize,
-) -> Result<Vec<TcpStream>> {
-    let peers = Arc::new(Mutex::new(Vec::new()));
+    max_concurent_peers: usize,
+    timeout: u64,
+) -> Vec<TcpStream> {
+    let max_concurent_peers = max_concurent_peers.min(addrs.len());
+    let (tx, mut rx) = mpsc::channel(max_concurent_peers);
     let mut handles = Vec::new();
-    for addr in addrs.iter().take(max_peers) {
-        let peers = peers.clone();
+    println!("establishing peers...");
+    for addr in addrs {
+        let tx = tx.clone();
         let addr = addr.clone();
         let info_hash = info_hash.clone();
         handles.push(tokio::spawn(async move {
             if let Ok(peer) = establish_peer(addr, info_hash).await {
-                let mut guard = peers.lock().await;
-                (*guard).push(peer);
-            }
+                let _ = tx.send(peer).await;
+            };
         }));
     }
-    for handle in handles {
-        handle.await?;
+    let mut peers = Vec::new();
+    let timeout_future = sleep(Duration::from_secs(timeout));
+    tokio::pin!(timeout_future);
+    loop {
+        tokio::select! {
+            peer = rx.recv() => {
+                if let Some(peer) = peer {
+                    peers.push(peer);
+                }
+                if peers.len() == max_concurent_peers {
+                    break;
+                }
+            }
+            _ = &mut timeout_future => {
+                println!("timeout after {timeout}s");
+                break;
+            }
+        }
     }
-    let peers = Arc::try_unwrap(peers)
-        .map_err(|_| anyhow::Error::msg("failed to get peers"))?
-        .into_inner();
-    Ok(peers)
+    for handle in handles {
+        handle.abort();
+    }
+    println!("established {} peers", peers.len());
+    peers
 }
 
 async fn establish_peer(addr: Arc<String>, info_hash: Arc<[u8]>) -> Result<TcpStream> {
@@ -227,7 +250,7 @@ async fn establish_peer(addr: Arc<String>, info_hash: Arc<[u8]>) -> Result<TcpSt
     Ok(stream)
 }
 
-#[derive(PartialEq, Clone, Copy)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub enum MessageId {
     Choke = 0,
     Unchoke = 1,

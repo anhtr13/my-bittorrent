@@ -120,8 +120,8 @@ impl Cli {
                 )
                 .await?;
                 let addrs: Vec<_> = addrs.into_iter().map(Arc::new).collect();
-                let peers: Vec<_> = establish_peers(&addrs, Arc::new(torrent.info.hash), 8)
-                    .await?
+                let peers: Vec<_> = establish_peers(&addrs, Arc::new(torrent.info.hash), 8, 5)
+                    .await
                     .into_iter()
                     .map(|peer| Arc::new(Mutex::new(peer)))
                     .collect();
@@ -141,8 +141,8 @@ impl Cli {
                 )
                 .await?;
                 let addrs: Vec<_> = addrs.into_iter().map(Arc::new).collect();
-                let peers: Vec<_> = establish_peers(&addrs, Arc::new(torrent.info.hash), 8)
-                    .await?
+                let peers: Vec<_> = establish_peers(&addrs, Arc::new(torrent.info.hash), 8, 5)
+                    .await
                     .into_iter()
                     .map(|peer| Arc::new(Mutex::new(peer)))
                     .collect();
