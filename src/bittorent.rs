@@ -1,6 +1,7 @@
 mod encoding;
 mod magnet;
 mod peer;
+mod peer_message;
 mod torrent;
 
 use std::sync::Arc;
@@ -13,9 +14,11 @@ use tokio::{net::TcpStream, sync::Mutex};
 use crate::bittorent::{
     encoding::Bencoding,
     magnet::Magnet,
-    peer::{discover_peers, download_piece, establish_peers, hanshake},
+    peer::{discover_peers, download_piece, establish_peers, extended_hanshake, hanshake},
     torrent::Torrent,
 };
+
+const FETCH_PEER_TIMEOUT: u64 = 10;
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
@@ -99,7 +102,7 @@ impl Cli {
             Command::Handshake { torrent, addr } => {
                 let torrent = Torrent::from_file(&torrent)?;
                 let mut stream = TcpStream::connect(addr).await?;
-                let peer_id_back = hanshake(&mut stream, &torrent.info.hash, false).await?;
+                let peer_id_back = hanshake(&mut stream, &torrent.info.hash).await?;
                 println!("Peer ID: {}", hex::encode(peer_id_back));
                 Ok(())
             }
@@ -120,11 +123,12 @@ impl Cli {
                 )
                 .await?;
                 let addrs: Vec<_> = addrs.into_iter().map(Arc::new).collect();
-                let peers: Vec<_> = establish_peers(&addrs, Arc::new(torrent.info.hash), 8, 5)
-                    .await
-                    .into_iter()
-                    .map(|peer| Arc::new(Mutex::new(peer)))
-                    .collect();
+                let peers: Vec<_> =
+                    establish_peers(&addrs, Arc::new(torrent.info.hash), 8, FETCH_PEER_TIMEOUT)
+                        .await
+                        .into_iter()
+                        .map(|peer| Arc::new(Mutex::new(peer)))
+                        .collect();
                 download_piece(&peers, piece_index, &torrent, output.as_ref()).await?;
                 Ok(())
             }
@@ -141,11 +145,12 @@ impl Cli {
                 )
                 .await?;
                 let addrs: Vec<_> = addrs.into_iter().map(Arc::new).collect();
-                let peers: Vec<_> = establish_peers(&addrs, Arc::new(torrent.info.hash), 8, 5)
-                    .await
-                    .into_iter()
-                    .map(|peer| Arc::new(Mutex::new(peer)))
-                    .collect();
+                let peers: Vec<_> =
+                    establish_peers(&addrs, Arc::new(torrent.info.hash), 8, FETCH_PEER_TIMEOUT)
+                        .await
+                        .into_iter()
+                        .map(|peer| Arc::new(Mutex::new(peer)))
+                        .collect();
                 for idx in 0..torrent.info.pieces.len() {
                     download_piece(&peers, idx as u32, &torrent, output.as_ref()).await?;
                 }
@@ -170,7 +175,7 @@ impl Cli {
                 )
                 .await?;
                 let mut stream = TcpStream::connect(&addrs[0]).await?;
-                let peer_id_back = hanshake(&mut stream, &magnet_info.info_hash, true).await?;
+                let peer_id_back = extended_hanshake(&mut stream, &magnet_info.info_hash).await?;
                 println!("Peer ID: {}", hex::encode(peer_id_back));
                 Ok(())
             }
