@@ -14,10 +14,10 @@ use crate::bittorent::{
     encoding::Bencoding,
     magnet::Magnet,
     peer::{
-        discover_peers, download_piece, establish_peers, extension_hanshake, extension_meatadata,
-        hanshake,
+        discover_peers, download_piece, establish_peers, extension_hanshake,
+        get_extension_meatadata, hanshake,
     },
-    torrent::Torrent,
+    torrent::{Info, Torrent},
 };
 
 const FETCH_PEER_TIMEOUT: u64 = 10;
@@ -201,7 +201,17 @@ impl Cli {
                 let mut stream = TcpStream::connect(&addrs[0]).await?;
                 let (_peer_id_back, metadata) =
                     extension_hanshake(&mut stream, &magnet.info_hash).await?;
-                extension_meatadata(&mut stream, &metadata).await?;
+                let piece_contents = get_extension_meatadata(&mut stream, &metadata).await?;
+                let bencoded = Bencoding::decode(piece_contents)?;
+                let info = Info::decode(bencoded)?;
+                println!("Tracker URL: {}", magnet.tracker_url);
+                println!("Length: {}", info.length);
+                println!("Info Hash: {}", hex::encode(info.hash));
+                println!("Piece Length: {}", info.piece_length);
+                println!("Piece Hashes:");
+                for piece in info.pieces {
+                    println!("{}", hex::encode(piece));
+                }
                 Ok(())
             }
         }

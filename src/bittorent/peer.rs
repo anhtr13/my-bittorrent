@@ -15,7 +15,10 @@ use tokio::{
 use crate::bittorent::{
     encoding::Bencoding,
     peer::{
-        extension::{ExtensionMessage, ExtensionMessageType, ExtensionMetadata},
+        extension::{
+            ExtensionHandshakeMessage, ExtensionHandshakeMeta, ExtensionMessage,
+            ExtensionMessageType,
+        },
         message::{Message, MessageId, send_interested, wait_for_bitfield, wait_for_unchoke},
     },
     sha1_hash,
@@ -241,7 +244,7 @@ async fn download_piece_block(
 pub async fn extension_hanshake(
     stream: &mut TcpStream,
     info_hash: &[u8],
-) -> Result<(Vec<u8>, ExtensionMetadata)> {
+) -> Result<(Vec<u8>, ExtensionHandshakeMeta)> {
     let peer_id = generate_peer_id();
     let mut buf = Vec::new();
     buf.push(19);
@@ -262,27 +265,26 @@ pub async fn extension_hanshake(
 
     wait_for_bitfield(stream).await?;
 
-    let payload = ExtensionMessage::new_handshake_msg(0, 1, None).encode();
+    let payload = ExtensionHandshakeMessage::new(0, 1, None).encode();
     let ext_msg = Message::new(MessageId::Extension, payload);
     stream.write_all(&ext_msg.into_bytes()).await?;
 
     let ext_msg_back = Message::from_stream(stream).await?;
     anyhow::ensure!(ext_msg_back.id == MessageId::Extension);
-    let ext_msg_back = ExtensionMessage::decode(ext_msg_back.payload)?;
-    let Some(metadata) = ext_msg_back.payload.metadata else {
-        anyhow::bail!("metadata not found")
-    };
-    Ok((buf[48..].to_owned(), metadata))
+    let ext_msg_back = ExtensionHandshakeMessage::decode(ext_msg_back.payload)?;
+    Ok((buf[48..].to_owned(), ext_msg_back.m))
 }
 
-pub async fn extension_meatadata(
+pub async fn get_extension_meatadata(
     stream: &mut TcpStream,
-    metadata: &ExtensionMetadata,
-) -> Result<()> {
+    metadata: &ExtensionHandshakeMeta,
+) -> Result<Vec<u8>> {
     let ext_msg = ExtensionMessage::new(metadata.ut_metadata, ExtensionMessageType::Request, 0);
     let msg = Message::new(MessageId::Extension, ext_msg.encode());
     stream.write_all(&msg.into_bytes()).await?;
-    Ok(())
+    let msg_back = Message::from_stream(stream).await?;
+    let (_, piece_contents) = ExtensionMessage::decode_response(msg_back.payload)?;
+    Ok(piece_contents)
 }
 
 fn generate_peer_id() -> String {
