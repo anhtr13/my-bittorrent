@@ -15,7 +15,7 @@ use tokio::{
 use crate::bittorent::{
     encoding::Bencoding,
     peer::{
-        extension::ExtensionMessage,
+        extension::{ExtensionMessage, ExtensionMessageType, ExtensionMetadata},
         message::{Message, MessageId, send_interested, wait_for_bitfield, wait_for_unchoke},
     },
     sha1_hash,
@@ -238,7 +238,10 @@ async fn download_piece_block(
     Ok((offset, data))
 }
 
-pub async fn extended_hanshake(stream: &mut TcpStream, info_hash: &[u8]) -> Result<(Vec<u8>, u8)> {
+pub async fn extension_hanshake(
+    stream: &mut TcpStream,
+    info_hash: &[u8],
+) -> Result<(Vec<u8>, ExtensionMetadata)> {
     let peer_id = generate_peer_id();
     let mut buf = Vec::new();
     buf.push(19);
@@ -259,15 +262,27 @@ pub async fn extended_hanshake(stream: &mut TcpStream, info_hash: &[u8]) -> Resu
 
     wait_for_bitfield(stream).await?;
 
-    let payload = ExtensionMessage::new(1, None).encode();
+    let payload = ExtensionMessage::new_handshake_msg(0, 1, None).encode();
     let ext_msg = Message::new(MessageId::Extension, payload);
     stream.write_all(&ext_msg.into_bytes()).await?;
 
     let ext_msg_back = Message::from_stream(stream).await?;
     anyhow::ensure!(ext_msg_back.id == MessageId::Extension);
-    let ext_info = ExtensionMessage::decode(ext_msg_back.payload)?;
+    let ext_msg_back = ExtensionMessage::decode(ext_msg_back.payload)?;
+    let Some(metadata) = ext_msg_back.payload.metadata else {
+        anyhow::bail!("metadata not found")
+    };
+    Ok((buf[48..].to_owned(), metadata))
+}
 
-    Ok((buf[48..].to_owned(), ext_info.metadata.ut_metadata))
+pub async fn extension_meatadata(
+    stream: &mut TcpStream,
+    metadata: &ExtensionMetadata,
+) -> Result<()> {
+    let ext_msg = ExtensionMessage::new(metadata.ut_metadata, ExtensionMessageType::Request, 0);
+    let msg = Message::new(MessageId::Extension, ext_msg.encode());
+    stream.write_all(&msg.into_bytes()).await?;
+    Ok(())
 }
 
 fn generate_peer_id() -> String {

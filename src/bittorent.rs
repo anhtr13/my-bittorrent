@@ -13,7 +13,10 @@ use tokio::{net::TcpStream, sync::Mutex};
 use crate::bittorent::{
     encoding::Bencoding,
     magnet::Magnet,
-    peer::{discover_peers, download_piece, establish_peers, extended_hanshake, hanshake},
+    peer::{
+        discover_peers, download_piece, establish_peers, extension_hanshake, extension_meatadata,
+        hanshake,
+    },
     torrent::Torrent,
 };
 
@@ -53,6 +56,9 @@ pub enum Command {
 
     #[command(name = "magnet_handshake")]
     MagnetHandshake { link: String },
+
+    #[command(name = "magnet_info")]
+    MagnetInfo { link: String },
 }
 
 #[derive(Parser)]
@@ -156,16 +162,16 @@ impl Cli {
                 Ok(())
             }
             Command::MagnetParse { link } => {
-                let magnet_info = Magnet::parse(link)?;
-                println!("Tracker URL: {}", magnet_info.tracker_url);
-                println!("Info Hash: {}", hex::encode(magnet_info.info_hash));
+                let magnet = Magnet::parse(link)?;
+                println!("Tracker URL: {}", magnet.tracker_url);
+                println!("Info Hash: {}", hex::encode(magnet.info_hash));
                 Ok(())
             }
             Command::MagnetHandshake { link } => {
-                let magnet_info = Magnet::parse(link)?;
+                let magnet = Magnet::parse(link)?;
                 let (_, addrs) = discover_peers(
-                    &magnet_info.tracker_url,
-                    &magnet_info.info_hash,
+                    &magnet.tracker_url,
+                    &magnet.info_hash,
                     6881,
                     0,
                     0,
@@ -174,10 +180,28 @@ impl Cli {
                 )
                 .await?;
                 let mut stream = TcpStream::connect(&addrs[0]).await?;
-                let (peer_id_back, ut_metadata) =
-                    extended_hanshake(&mut stream, &magnet_info.info_hash).await?;
+                let (peer_id_back, metadata) =
+                    extension_hanshake(&mut stream, &magnet.info_hash).await?;
                 println!("Peer ID: {}", hex::encode(peer_id_back));
-                println!("Peer Metadata Extension ID: {}", ut_metadata);
+                println!("Peer Metadata Extension ID: {}", metadata.ut_metadata);
+                Ok(())
+            }
+            Command::MagnetInfo { link } => {
+                let magnet = Magnet::parse(link)?;
+                let (_, addrs) = discover_peers(
+                    &magnet.tracker_url,
+                    &magnet.info_hash,
+                    6881,
+                    0,
+                    0,
+                    9999,
+                    true,
+                )
+                .await?;
+                let mut stream = TcpStream::connect(&addrs[0]).await?;
+                let (_peer_id_back, metadata) =
+                    extension_hanshake(&mut stream, &magnet.info_hash).await?;
+                extension_meatadata(&mut stream, &metadata).await?;
                 Ok(())
             }
         }
