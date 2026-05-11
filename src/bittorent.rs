@@ -14,8 +14,8 @@ use crate::bittorent::{
     encoding::Bencoding,
     magnet::Magnet,
     peer::{
-        discover_peers, download_piece, establish_peers, extension_hanshake,
-        get_extension_meatadata, hanshake,
+        discover_peers, download_piece, establish_peers, extension_hanshake, get_piece_contents,
+        hanshake,
     },
     torrent::{Info, Torrent},
 };
@@ -59,6 +59,21 @@ pub enum Command {
 
     #[command(name = "magnet_info")]
     MagnetInfo { link: String },
+
+    #[command(name = "magnet_download_piece")]
+    MagnetDownloadPiece {
+        #[arg(short = 'o', long = "output")]
+        output: Option<String>,
+        link: String,
+        piece_index: u32,
+    },
+
+    #[command(name = "magnet_download")]
+    MagnetDownload {
+        #[arg(short = 'o', long = "output")]
+        output: Option<String>,
+        link: String,
+    },
 }
 
 #[derive(Parser)]
@@ -134,7 +149,7 @@ impl Cli {
                         .into_iter()
                         .map(|peer| Arc::new(Mutex::new(peer)))
                         .collect();
-                download_piece(&peers, piece_index, &torrent, output.as_ref()).await?;
+                download_piece(&peers, piece_index, &torrent.info, output.as_ref()).await?;
                 Ok(())
             }
             Command::Download { output, torrent } => {
@@ -157,7 +172,7 @@ impl Cli {
                         .map(|peer| Arc::new(Mutex::new(peer)))
                         .collect();
                 for idx in 0..torrent.info.pieces.len() {
-                    download_piece(&peers, idx as u32, &torrent, output.as_ref()).await?;
+                    download_piece(&peers, idx as u32, &torrent.info, output.as_ref()).await?;
                 }
                 Ok(())
             }
@@ -201,7 +216,7 @@ impl Cli {
                 let mut stream = TcpStream::connect(&addrs[0]).await?;
                 let (_peer_id_back, metadata) =
                     extension_hanshake(&mut stream, &magnet.info_hash).await?;
-                let piece_contents = get_extension_meatadata(&mut stream, &metadata).await?;
+                let piece_contents = get_piece_contents(&mut stream, &metadata).await?;
                 let bencoded = Bencoding::decode(piece_contents)?;
                 let info = Info::decode(bencoded)?;
                 println!("Tracker URL: {}", magnet.tracker_url);
@@ -211,6 +226,88 @@ impl Cli {
                 println!("Piece Hashes:");
                 for piece in info.pieces {
                     println!("{}", hex::encode(piece));
+                }
+                Ok(())
+            }
+            Command::MagnetDownloadPiece {
+                output,
+                link,
+                piece_index,
+            } => {
+                let magnet = Magnet::parse(link)?;
+                let (_, addrs) = discover_peers(
+                    &magnet.tracker_url,
+                    &magnet.info_hash,
+                    6881,
+                    0,
+                    0,
+                    9999,
+                    true,
+                )
+                .await?;
+                let mut stream = TcpStream::connect(&addrs[0]).await?;
+                let (_peer_id_back, ext_handshake_meta) =
+                    extension_hanshake(&mut stream, &magnet.info_hash).await?;
+                let contents = get_piece_contents(&mut stream, &ext_handshake_meta).await?;
+                let bencoded = Bencoding::decode(contents)?;
+                let info = Info::decode(bencoded)?;
+                let (_, addrs) = discover_peers(
+                    &magnet.tracker_url,
+                    &info.hash,
+                    6881,
+                    0,
+                    0,
+                    info.length,
+                    true,
+                )
+                .await?;
+                let addrs: Vec<_> = addrs.into_iter().map(Arc::new).collect();
+                let peers: Vec<_> =
+                    establish_peers(&addrs, Arc::new(info.hash), 8, FETCH_PEER_TIMEOUT)
+                        .await
+                        .into_iter()
+                        .map(|peer| Arc::new(Mutex::new(peer)))
+                        .collect();
+                download_piece(&peers, piece_index, &info, output.as_ref()).await?;
+                Ok(())
+            }
+            Command::MagnetDownload { output, link } => {
+                let magnet = Magnet::parse(link)?;
+                let (_, addrs) = discover_peers(
+                    &magnet.tracker_url,
+                    &magnet.info_hash,
+                    6881,
+                    0,
+                    0,
+                    9999,
+                    true,
+                )
+                .await?;
+                let mut stream = TcpStream::connect(&addrs[0]).await?;
+                let (_peer_id_back, ext_handshake_meta) =
+                    extension_hanshake(&mut stream, &magnet.info_hash).await?;
+                let contents = get_piece_contents(&mut stream, &ext_handshake_meta).await?;
+                let bencoded = Bencoding::decode(contents)?;
+                let info = Info::decode(bencoded)?;
+                let (_, addrs) = discover_peers(
+                    &magnet.tracker_url,
+                    &info.hash,
+                    6881,
+                    0,
+                    0,
+                    info.length,
+                    true,
+                )
+                .await?;
+                let addrs: Vec<_> = addrs.into_iter().map(Arc::new).collect();
+                let peers: Vec<_> =
+                    establish_peers(&addrs, Arc::new(info.hash), 8, FETCH_PEER_TIMEOUT)
+                        .await
+                        .into_iter()
+                        .map(|peer| Arc::new(Mutex::new(peer)))
+                        .collect();
+                for idx in 0..info.pieces.len() {
+                    download_piece(&peers, idx as u32, &info, output.as_ref()).await?;
                 }
                 Ok(())
             }

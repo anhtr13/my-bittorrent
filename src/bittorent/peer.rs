@@ -22,7 +22,7 @@ use crate::bittorent::{
         message::{Message, MessageId, send_interested, wait_for_bitfield, wait_for_unchoke},
     },
     sha1_hash,
-    torrent::Torrent,
+    torrent::Info,
 };
 
 pub const BLOCK_SIZE: u32 = 16 * 1024;
@@ -149,17 +149,16 @@ async fn establish_peer(addr: Arc<String>, info_hash: Arc<[u8]>) -> Result<TcpSt
 pub async fn download_piece(
     peers: &[Arc<Mutex<TcpStream>>],
     piece_index: u32,
-    torrent: &Torrent,
+    info: &Info,
     output: Option<&String>,
 ) -> Result<()> {
-    let Some(piece_hash) = torrent.info.pieces.get(piece_index as usize) else {
+    let Some(piece_hash) = info.pieces.get(piece_index as usize) else {
         anyhow::bail!("piece_index out of range");
     };
-    let piece_length = torrent
-        .info
+    let piece_length = info
         .length
-        .saturating_sub(torrent.info.piece_length * piece_index as u64)
-        .min(torrent.info.piece_length) as u32;
+        .saturating_sub(info.piece_length * piece_index as u64)
+        .min(info.piece_length) as u32;
 
     let mut number_of_blocks = piece_length / BLOCK_SIZE;
     if number_of_blocks * BLOCK_SIZE < piece_length {
@@ -208,7 +207,7 @@ pub async fn download_piece(
     let checksum = sha1_hash(&piece_data);
     anyhow::ensure!(&checksum == piece_hash, "checksum miss match");
 
-    let output = output.unwrap_or(&torrent.info.name);
+    let output = output.unwrap_or(&info.name);
     let mut file = OpenOptions::new().create(true).append(true).open(output)?;
     file.write_all(&piece_data)?;
 
@@ -275,7 +274,7 @@ pub async fn extension_hanshake(
     Ok((buf[48..].to_owned(), ext_msg_back.m))
 }
 
-pub async fn get_extension_meatadata(
+pub async fn get_piece_contents(
     stream: &mut TcpStream,
     metadata: &ExtensionHandshakeMeta,
 ) -> Result<Vec<u8>> {
