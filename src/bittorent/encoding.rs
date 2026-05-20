@@ -7,6 +7,7 @@ use std::{
 use anyhow::{Context, Result};
 use bytes::Buf;
 
+#[derive(Debug, PartialEq)]
 pub enum Bencoding {
     String(Vec<u8>),
     Integer(i64),
@@ -139,5 +140,115 @@ impl Bencoding {
                 bytes
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use std::{collections::BTreeMap, io::Write};
+
+    use anyhow::Result;
+
+    use crate::bittorent::encoding::Bencoding;
+
+    #[test]
+    fn test_string() -> Result<()> {
+        let bvalue = Bencoding::String(b"Hello world".to_vec());
+        let encoded = bvalue.encode();
+        assert_eq!(encoded, b"11:Hello world");
+
+        let encoded = b"15:bencoded string".to_vec();
+        let decoded = Bencoding::decode(encoded)?;
+        assert_eq!(decoded, Bencoding::String(b"bencoded string".to_vec()));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_integer() -> Result<()> {
+        let bvalue = Bencoding::Integer(-123);
+        let encoded = bvalue.encode();
+        assert_eq!(encoded, b"i-123e");
+
+        let encoded = b"i12345678e".to_vec();
+        let decoded = Bencoding::decode(encoded)?;
+        assert_eq!(decoded, Bencoding::Integer(12345678));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_list() {
+        let bvalue = Bencoding::List(vec![
+            Bencoding::String(b"hello world".to_vec()),
+            Bencoding::Integer(123456),
+            Bencoding::List(vec![Bencoding::String(b"inside nested list".to_vec())]),
+            Bencoding::Dictionary(BTreeMap::from([(
+                String::from("wololo"),
+                Bencoding::String(b"inside nested dictionary".to_vec()),
+            )])),
+        ]);
+
+        assert_eq!(
+            bvalue.encode(),
+            b"l11:hello worldi123456el18:inside nested listed6:wololo24:inside nested dictionaryee"
+        );
+    }
+
+    #[test]
+    fn test_dictionary() {
+        let bvalue = Bencoding::Dictionary(BTreeMap::from([
+            (
+                String::from("string"),
+                Bencoding::String(b"hello world".to_vec()),
+            ),
+            (String::from("integer"), Bencoding::Integer(12345678)),
+            (
+                String::from("list"),
+                Bencoding::List(vec![Bencoding::String(b"inside nested list".to_vec())]),
+            ),
+            (
+                String::from("dictionary"),
+                Bencoding::Dictionary(BTreeMap::from([(
+                    String::from("wololo"),
+                    Bencoding::String(b"inside nested dictionary".to_vec()),
+                )])),
+            ),
+        ]));
+
+        assert_eq!(
+            bvalue.encode(),
+            b"d10:dictionaryd6:wololo24:inside nested dictionarye7:integeri12345678e4:listl18:inside nested liste6:string11:hello worlde"
+        );
+    }
+
+    #[test]
+    fn test_display() -> Result<()> {
+        let bvalue = Bencoding::Dictionary(BTreeMap::from([
+            (
+                String::from("string"),
+                Bencoding::String(b"hello world".to_vec()),
+            ),
+            (String::from("integer"), Bencoding::Integer(12345678)),
+            (
+                String::from("list"),
+                Bencoding::List(vec![Bencoding::String(b"inside nested list".to_vec())]),
+            ),
+            (
+                String::from("dictionary"),
+                Bencoding::Dictionary(BTreeMap::from([(
+                    String::from("wololo"),
+                    Bencoding::String(b"inside nested dictionary".to_vec()),
+                )])),
+            ),
+        ]));
+
+        let mut display_output = Vec::new();
+        write!(&mut display_output, "{bvalue}")?;
+
+        let expected = r#"{"dictionary":{"wololo":"inside nested dictionary"},"integer":12345678,"list":["inside nested list"],"string":"hello world"}"#;
+
+        assert_eq!(display_output, expected.as_bytes());
+        Ok(())
     }
 }

@@ -1,5 +1,6 @@
 use anyhow::Result;
 
+#[derive(Debug)]
 #[allow(unused)]
 pub struct Magnet {
     pub file_name: String,
@@ -72,4 +73,30 @@ fn decode_url(url: &str) -> Result<String> {
         }
     }
     Ok(res)
+}
+
+#[cfg(test)]
+mod test {
+    use anyhow::Result;
+
+    use crate::bittorent::magnet::Magnet;
+
+    #[test]
+    fn test_parse_magnet() -> Result<()> {
+        let magnet = Magnet::parse(String::from(
+            "magnet:?xt=urn:btih:ad42ce8109f54c99613ce38f9b4d87e70f24a165&dn=magnet1.gif&tr=http%3A%2F%2Fbittorrent-test-tracker.codecrafters.io%2Fannounce",
+        ))?;
+
+        assert_eq!(magnet.file_name, "magnet1.gif");
+        assert_eq!(
+            magnet.tracker_url,
+            "http://bittorrent-test-tracker.codecrafters.io/announce"
+        );
+        assert_eq!(
+            hex::encode(magnet.info_hash),
+            "ad42ce8109f54c99613ce38f9b4d87e70f24a165"
+        );
+
+        Ok(())
+    }
 }
