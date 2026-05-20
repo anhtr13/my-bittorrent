@@ -2,8 +2,9 @@ use std::{fs::OpenOptions, io::Write, sync::Arc, time::Duration};
 
 use anyhow::Result;
 use tokio::{
+    io::AsyncWriteExt,
     sync::{Mutex, mpsc},
-    time::sleep,
+    time::{self, sleep},
 };
 
 use crate::bittorent::{peer::Peer, sha1_hash, torrent::Info};
@@ -11,6 +12,7 @@ use crate::bittorent::{peer::Peer, sha1_hash, torrent::Info};
 const BLOCK_SIZE: u32 = 16 * 1024;
 const MAX_CONNECTING_PEERS: usize = 24;
 const ESTABLISH_PEER_TIMEOUT: Duration = Duration::from_secs(10);
+const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(120);
 
 pub struct Downloader {
     pub addrs: Vec<String>,
@@ -71,11 +73,17 @@ impl Downloader {
             .collect();
     }
 
-    pub async fn download_piece(
-        &mut self,
-        piece_index: u32,
-        output: Option<&String>,
-    ) -> Result<()> {
+    pub async fn download(&mut self, output: Option<&str>) -> Result<()> {
+        self.keep_peers_alive();
+        let total_pieces = self.info.pieces.len();
+        for idx in 0..total_pieces {
+            self.download_piece(idx as u32, output).await?;
+            println!("Downloaded {}/{} pieces", idx + 1, total_pieces);
+        }
+        Ok(())
+    }
+
+    pub async fn download_piece(&mut self, piece_index: u32, output: Option<&str>) -> Result<()> {
         let Some(piece_hash) = self.info.pieces.get(piece_index as usize) else {
             anyhow::bail!("piece_index out of range");
         };
@@ -127,8 +135,7 @@ impl Downloader {
                             *downloaded_guard += 1;
                         }
                         Err(e) => {
-                            println!("Failed to download piece block: {e}");
-                            println!("Dropped peer: {:?}", peer.addr);
+                            println!("{:?}: failed to download piece block: {}", peer.addr, e);
                             peer.drop = true;
                             let mut state_guard = states.lock().await;
                             state_guard[idx] = false;
@@ -159,6 +166,27 @@ impl Downloader {
 
         self.retain_peers().await;
         Ok(())
+    }
+
+    pub fn keep_peers_alive(&self) {
+        for peer in self.peers.iter() {
+            let mut interval = time::interval(KEEPALIVE_INTERVAL);
+            let peer = peer.clone();
+            tokio::spawn(async move {
+                interval.tick().await;
+                let mut peer_guard = peer.lock().await;
+                match peer_guard.stream.write_all(&[0, 0, 0, 0]).await {
+                    Ok(_) => {}
+                    Err(e) => {
+                        println!(
+                            "{:?}: failed to send send keepalive: {}",
+                            peer_guard.addr, e
+                        );
+                        peer_guard.drop = true;
+                    }
+                }
+            });
+        }
     }
 
     async fn retain_peers(&mut self) {

@@ -140,7 +140,7 @@ impl Cli {
                 let mut downloader = Downloader::new(addrs, torrent.info);
                 downloader.establish_peers().await;
                 downloader
-                    .download_piece(piece_index, output.as_ref())
+                    .download_piece(piece_index, output.as_deref())
                     .await?;
                 Ok(())
             }
@@ -156,15 +156,9 @@ impl Cli {
                     true,
                 )
                 .await?;
-                let total_pieces = torrent.info.pieces.len();
                 let mut downloader = Downloader::new(addrs, torrent.info);
                 downloader.establish_peers().await;
-                for idx in 0..total_pieces {
-                    downloader
-                        .download_piece(idx as u32, output.as_ref())
-                        .await?;
-                    println!("Downloaded {}/{} pieces", idx + 1, total_pieces);
-                }
+                downloader.download(output.as_deref()).await?;
                 Ok(())
             }
             Command::MagnetParse { link } => {
@@ -252,7 +246,7 @@ impl Cli {
                 let mut downloader = Downloader::new(addrs, info);
                 downloader.establish_peers().await;
                 downloader
-                    .download_piece(piece_index, output.as_ref())
+                    .download_piece(piece_index, output.as_deref())
                     .await?;
                 Ok(())
             }
@@ -283,15 +277,9 @@ impl Cli {
                     true,
                 )
                 .await?;
-                let total_pieces = info.pieces.len();
                 let mut downloader = Downloader::new(addrs, info);
                 downloader.establish_peers().await;
-                for idx in 0..total_pieces {
-                    downloader
-                        .download_piece(idx as u32, output.as_ref())
-                        .await?;
-                    println!("Downloaded {}/{} pieces", idx + 1, total_pieces);
-                }
+                downloader.download(output.as_deref()).await?;
                 Ok(())
             }
         }
