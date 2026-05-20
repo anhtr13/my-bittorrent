@@ -1,33 +1,17 @@
-mod extension;
-mod message;
-
-use std::{fs::OpenOptions, io::Write, sync::Arc, time::Duration};
+pub mod extension;
+pub mod message;
 
 use anyhow::Result;
 use rand::{RngExt, distr::Alphanumeric};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
-    sync::{Mutex, mpsc},
-    time::sleep,
 };
 
 use crate::bittorent::{
     encoding::Bencoding,
-    peer::{
-        extension::{
-            ExtensionHandshakeMessage, ExtensionHandshakeMeta, ExtensionMessage,
-            ExtensionMessageType,
-        },
-        message::{Message, MessageId, send_interested, wait_for_bitfield, wait_for_unchoke},
-    },
-    sha1_hash,
-    torrent::Info,
+    peer::message::{Message, MessageId},
 };
-
-const BLOCK_SIZE: u32 = 16 * 1024;
-const MAX_CONNECTING_PEERS: usize = 8;
-const ESTABLISH_PEER_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[allow(clippy::too_many_arguments)]
 pub async fn discover_peers(
@@ -74,200 +58,16 @@ pub async fn discover_peers(
     Ok((interval, peers))
 }
 
-pub async fn hanshake(stream: &mut TcpStream, info_hash: &[u8]) -> Result<Vec<u8>> {
-    let peer_id = generate_peer_id();
-    let mut buf = Vec::new();
-    buf.push(19);
-    buf.extend(b"BitTorrent protocol");
-    buf.extend([0u8; 8]);
-    buf.extend(info_hash);
-    buf.extend(peer_id.into_bytes());
-    stream.write_all(&buf).await?;
-
-    let mut buf = [0u8; 68];
-    stream.read_exact(&mut buf).await?;
-    anyhow::ensure!(buf[0] == 19);
-    anyhow::ensure!(&buf[1..20] == b"BitTorrent protocol");
-    anyhow::ensure!(&buf[28..48] == info_hash);
-
-    Ok(buf[48..].to_owned())
-}
-
-pub async fn establish_peers(addrs: &[Arc<String>], info_hash: Arc<[u8]>) -> Vec<Peer> {
-    let total_addrs = addrs.len();
-    let (tx, mut rx) = mpsc::channel(total_addrs);
-    let mut handles = Vec::new();
-    println!("establishing peers...");
-    for addr in addrs {
-        let tx = tx.clone();
-        let addr = addr.clone();
-        let info_hash = info_hash.clone();
-        handles.push(tokio::spawn(async move {
-            if let Ok(peer) = Peer::establish(addr, info_hash).await {
-                let _ = tx.send(peer).await;
-            };
-        }));
-    }
-    let mut peers = Vec::new();
-    let timeout_future = sleep(ESTABLISH_PEER_TIMEOUT);
-    tokio::pin!(timeout_future);
-    loop {
-        tokio::select! {
-            peer = rx.recv() => {
-                if let Some(peer) = peer {
-                    peers.push(peer);
-                }
-                if peers.len() == total_addrs.min(MAX_CONNECTING_PEERS) {
-                    break;
-                }
-            }
-            _ = &mut timeout_future => {
-                println!("timeout after {ESTABLISH_PEER_TIMEOUT:?}");
-                break;
-            }
-        }
-    }
-    for handle in handles {
-        handle.abort();
-    }
-    println!("established {} peers.", peers.len());
-    peers
-}
-
-pub async fn download_piece(
-    peers: &[Arc<Mutex<Peer>>],
-    piece_index: u32,
-    info: &Info,
-    output: Option<&String>,
-) -> Result<()> {
-    let Some(piece_hash) = info.pieces.get(piece_index as usize) else {
-        anyhow::bail!("piece_index out of range");
-    };
-    let piece_length = info
-        .length
-        .saturating_sub(info.piece_length * piece_index as u64)
-        .min(info.piece_length) as u32;
-
-    let mut number_of_blocks = piece_length / BLOCK_SIZE;
-    if number_of_blocks * BLOCK_SIZE < piece_length {
-        number_of_blocks += 1;
-    }
-
-    let blocks = Arc::new(Mutex::new(vec![false; number_of_blocks as usize]));
-    let piece = Arc::new(Mutex::new(vec![0u8; piece_length as usize]));
-    let mut handles = Vec::new();
-
-    for peer in peers {
-        let peer = peer.clone();
-        let blocks = blocks.clone();
-        let piece = piece.clone();
-        handles.push(tokio::spawn(async move {
-            let mut peer = peer.lock().await;
-            if !peer.pieces[piece_index as usize] {
-                return;
-            }
-            loop {
-                let mut guard = blocks.lock().await;
-                let Some(block_index) = guard.iter().position(|downloaded| !downloaded) else {
-                    break;
-                };
-                guard[block_index] = true;
-                drop(guard);
-                let offset = block_index as u32 * BLOCK_SIZE;
-                let length = (piece_length - offset).min(BLOCK_SIZE);
-                match peer.download_piece_block(piece_index, offset, length).await {
-                    Ok((_, data)) => {
-                        let mut piece = piece.lock().await;
-                        (*piece)[offset as usize..(offset + length) as usize]
-                            .copy_from_slice(&data);
-                    }
-                    Err(e) => {
-                        println!(
-                            "Failed to download block from peer {:?}: {e}",
-                            peer.stream.peer_addr()
-                        );
-                        let mut guard = blocks.lock().await;
-                        guard[block_index] = false;
-                    }
-                }
-            }
-        }));
-    }
-
-    for handle in handles {
-        handle.await?;
-    }
-
-    let piece_data = Arc::try_unwrap(piece)
-        .map_err(|_| anyhow::Error::msg("failed to get piece"))?
-        .into_inner();
-
-    let checksum = sha1_hash(&piece_data);
-    anyhow::ensure!(&checksum == piece_hash, "checksum miss match");
-
-    let output = output.unwrap_or(&info.name);
-    let mut file = OpenOptions::new().create(true).append(true).open(output)?;
-    file.write_all(&piece_data)?;
-
-    Ok(())
-}
-
-pub async fn extension_hanshake(
-    stream: &mut TcpStream,
-    info_hash: &[u8],
-) -> Result<(Vec<u8>, ExtensionHandshakeMeta)> {
-    let peer_id = generate_peer_id();
-    let mut buf = Vec::new();
-    buf.push(19);
-    buf.extend(b"BitTorrent protocol");
-    buf.extend([0, 0, 0, 0, 0, 0x10, 0, 0]);
-    buf.extend(info_hash);
-    buf.extend(peer_id.into_bytes());
-    stream.write_all(&buf).await?;
-
-    let mut buf = [0u8; 68];
-    stream.read_exact(&mut buf).await?;
-    anyhow::ensure!(buf[0] == 19);
-    anyhow::ensure!(&buf[1..20] == b"BitTorrent protocol");
-    anyhow::ensure!(&buf[28..48] == info_hash);
-
-    let reserved = &buf[20..28];
-    anyhow::ensure!(reserved[5] == 0x10, "peer does not support extension");
-
-    wait_for_bitfield(stream).await?;
-
-    let payload = ExtensionHandshakeMessage::new(0, 1, None).encode();
-    let ext_msg = Message::new(MessageId::Extension, payload);
-    stream.write_all(&ext_msg.into_bytes()).await?;
-
-    let ext_msg_back = Message::from_stream(stream).await?;
-    anyhow::ensure!(ext_msg_back.id == MessageId::Extension);
-    let ext_msg_back = ExtensionHandshakeMessage::decode(ext_msg_back.payload)?;
-    Ok((buf[48..].to_owned(), ext_msg_back.m))
-}
-
-pub async fn get_extension_metainfo(
-    stream: &mut TcpStream,
-    metadata: &ExtensionHandshakeMeta,
-) -> Result<Info> {
-    let ext_msg = ExtensionMessage::new(metadata.ut_metadata, ExtensionMessageType::Request, 0);
-    let msg = Message::new(MessageId::Extension, ext_msg.encode());
-    stream.write_all(&msg.into_bytes()).await?;
-    let msg_back = Message::from_stream(stream).await?;
-    let (_, piece_contents) = ExtensionMessage::decode_response(msg_back.payload)?;
-    let bvalue = Bencoding::decode(piece_contents)?;
-    let info = Info::decode(bvalue)?;
-    Ok(info)
-}
-
 pub struct Peer {
-    stream: TcpStream,
-    pieces: Vec<bool>,
+    pub addr: String,
+    pub stream: TcpStream,
+    pub pieces: Vec<bool>,
+    pub drop: bool,
 }
 
 impl Peer {
-    async fn establish(addr: Arc<String>, info_hash: Arc<[u8]>) -> Result<Self> {
-        let mut stream = TcpStream::connect(addr.as_ref()).await?;
+    pub async fn establish(addr: String, info_hash: [u8; 20]) -> Result<Self> {
+        let mut stream = TcpStream::connect(&addr).await?;
         hanshake(&mut stream, &info_hash).await?;
         let bitfield = wait_for_bitfield(&mut stream).await?;
         send_interested(&mut stream).await?;
@@ -282,10 +82,15 @@ impl Peer {
                 }
             }
         }
-        Ok(Self { stream, pieces })
+        Ok(Self {
+            addr,
+            stream,
+            pieces,
+            drop: false,
+        })
     }
 
-    async fn download_piece_block(
+    pub async fn download_piece_block(
         &mut self,
         piece_index: u32,
         offset: u32,
@@ -316,6 +121,43 @@ impl Peer {
             }
         }
     }
+}
+
+pub async fn hanshake(stream: &mut TcpStream, info_hash: &[u8]) -> Result<Vec<u8>> {
+    let peer_id = generate_peer_id();
+    let mut buf = Vec::new();
+    buf.push(19);
+    buf.extend(b"BitTorrent protocol");
+    buf.extend([0u8; 8]);
+    buf.extend(info_hash);
+    buf.extend(peer_id.into_bytes());
+    stream.write_all(&buf).await?;
+
+    let mut buf = [0u8; 68];
+    stream.read_exact(&mut buf).await?;
+    anyhow::ensure!(buf[0] == 19);
+    anyhow::ensure!(&buf[1..20] == b"BitTorrent protocol");
+    anyhow::ensure!(&buf[28..48] == info_hash);
+
+    Ok(buf[48..].to_owned())
+}
+
+async fn wait_for_bitfield(stream: &mut TcpStream) -> Result<Vec<u8>> {
+    let msg = Message::from_stream(stream).await?;
+    anyhow::ensure!(msg.id == MessageId::Bitfield);
+    Ok(msg.payload)
+}
+
+async fn send_interested(stream: &mut TcpStream) -> Result<()> {
+    let msg = Message::new(MessageId::Interested, Vec::new());
+    stream.write_all(&msg.into_bytes()).await?;
+    Ok(())
+}
+
+async fn wait_for_unchoke(stream: &mut TcpStream) -> Result<()> {
+    let msg = Message::from_stream(stream).await?;
+    anyhow::ensure!(msg.id == MessageId::Unchoke);
+    Ok(())
 }
 
 fn generate_peer_id() -> String {

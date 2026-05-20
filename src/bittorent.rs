@@ -1,22 +1,19 @@
+mod downloader;
 mod encoding;
 mod magnet;
 mod peer;
 mod torrent;
 
-use std::sync::Arc;
-
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use sha1::{Digest, Sha1};
-use tokio::{net::TcpStream, sync::Mutex};
+use tokio::net::TcpStream;
 
 use crate::bittorent::{
+    downloader::Downloader,
     encoding::Bencoding,
     magnet::Magnet,
-    peer::{
-        discover_peers, download_piece, establish_peers, extension_hanshake,
-        get_extension_metainfo, hanshake,
-    },
+    peer::{discover_peers, extension, hanshake},
     torrent::Torrent,
 };
 
@@ -140,13 +137,11 @@ impl Cli {
                     true,
                 )
                 .await?;
-                let addrs: Vec<_> = addrs.into_iter().map(Arc::new).collect();
-                let peers: Vec<_> = establish_peers(&addrs, Arc::new(torrent.info.hash))
-                    .await
-                    .into_iter()
-                    .map(|peer| Arc::new(Mutex::new(peer)))
-                    .collect();
-                download_piece(&peers, piece_index, &torrent.info, output.as_ref()).await?;
+                let mut downloader = Downloader::new(addrs, torrent.info);
+                downloader.establish_peers().await;
+                downloader
+                    .download_piece(piece_index, output.as_ref())
+                    .await?;
                 Ok(())
             }
             Command::Download { output, torrent } => {
@@ -161,16 +156,14 @@ impl Cli {
                     true,
                 )
                 .await?;
-                let addrs: Vec<_> = addrs.into_iter().map(Arc::new).collect();
-                let peers: Vec<_> = establish_peers(&addrs, Arc::new(torrent.info.hash))
-                    .await
-                    .into_iter()
-                    .map(|peer| Arc::new(Mutex::new(peer)))
-                    .collect();
                 let total_pieces = torrent.info.pieces.len();
+                let mut downloader = Downloader::new(addrs, torrent.info);
+                downloader.establish_peers().await;
                 for idx in 0..total_pieces {
-                    download_piece(&peers, idx as u32, &torrent.info, output.as_ref()).await?;
-                    println!("downloaded {}/{} pieces", idx + 1, total_pieces);
+                    downloader
+                        .download_piece(idx as u32, output.as_ref())
+                        .await?;
+                    println!("Downloaded {}/{} pieces", idx + 1, total_pieces);
                 }
                 Ok(())
             }
@@ -194,7 +187,7 @@ impl Cli {
                 .await?;
                 let mut stream = TcpStream::connect(&addrs[0]).await?;
                 let (peer_id_back, metadata) =
-                    extension_hanshake(&mut stream, &magnet.info_hash).await?;
+                    extension::hanshake(&mut stream, &magnet.info_hash).await?;
                 println!("Peer ID: {}", hex::encode(peer_id_back));
                 println!("Peer Metadata Extension ID: {}", metadata.ut_metadata);
                 Ok(())
@@ -213,8 +206,8 @@ impl Cli {
                 .await?;
                 let mut stream = TcpStream::connect(&addrs[0]).await?;
                 let (_peer_id_back, metadata) =
-                    extension_hanshake(&mut stream, &magnet.info_hash).await?;
-                let info = get_extension_metainfo(&mut stream, &metadata).await?;
+                    extension::hanshake(&mut stream, &magnet.info_hash).await?;
+                let info = extension::request_torrent_info(&mut stream, &metadata).await?;
                 println!("Tracker URL: {}", magnet.tracker_url);
                 println!("Length: {}", info.length);
                 println!("Info Hash: {}", hex::encode(info.hash));
@@ -243,8 +236,9 @@ impl Cli {
                 .await?;
                 let mut stream = TcpStream::connect(&addrs[0]).await?;
                 let (_peer_id_back, ext_handshake_meta) =
-                    extension_hanshake(&mut stream, &magnet.info_hash).await?;
-                let info = get_extension_metainfo(&mut stream, &ext_handshake_meta).await?;
+                    extension::hanshake(&mut stream, &magnet.info_hash).await?;
+                let info =
+                    extension::request_torrent_info(&mut stream, &ext_handshake_meta).await?;
                 let (_, addrs) = discover_peers(
                     &magnet.tracker_url,
                     &info.hash,
@@ -255,13 +249,11 @@ impl Cli {
                     true,
                 )
                 .await?;
-                let addrs: Vec<_> = addrs.into_iter().map(Arc::new).collect();
-                let peers: Vec<_> = establish_peers(&addrs, Arc::new(info.hash))
-                    .await
-                    .into_iter()
-                    .map(|peer| Arc::new(Mutex::new(peer)))
-                    .collect();
-                download_piece(&peers, piece_index, &info, output.as_ref()).await?;
+                let mut downloader = Downloader::new(addrs, info);
+                downloader.establish_peers().await;
+                downloader
+                    .download_piece(piece_index, output.as_ref())
+                    .await?;
                 Ok(())
             }
             Command::MagnetDownload { output, link } => {
@@ -278,8 +270,9 @@ impl Cli {
                 .await?;
                 let mut stream = TcpStream::connect(&addrs[0]).await?;
                 let (_peer_id_back, ext_handshake_meta) =
-                    extension_hanshake(&mut stream, &magnet.info_hash).await?;
-                let info = get_extension_metainfo(&mut stream, &ext_handshake_meta).await?;
+                    extension::hanshake(&mut stream, &magnet.info_hash).await?;
+                let info =
+                    extension::request_torrent_info(&mut stream, &ext_handshake_meta).await?;
                 let (_, addrs) = discover_peers(
                     &magnet.tracker_url,
                     &info.hash,
@@ -290,16 +283,14 @@ impl Cli {
                     true,
                 )
                 .await?;
-                let addrs: Vec<_> = addrs.into_iter().map(Arc::new).collect();
-                let peers: Vec<_> = establish_peers(&addrs, Arc::new(info.hash))
-                    .await
-                    .into_iter()
-                    .map(|peer| Arc::new(Mutex::new(peer)))
-                    .collect();
                 let total_pieces = info.pieces.len();
+                let mut downloader = Downloader::new(addrs, info);
+                downloader.establish_peers().await;
                 for idx in 0..total_pieces {
-                    download_piece(&peers, idx as u32, &info, output.as_ref()).await?;
-                    println!("downloaded {}/{} pieces", idx + 1, total_pieces);
+                    downloader
+                        .download_piece(idx as u32, output.as_ref())
+                        .await?;
+                    println!("Downloaded {}/{} pieces", idx + 1, total_pieces);
                 }
                 Ok(())
             }

@@ -1,8 +1,5 @@
 use anyhow::Result;
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::TcpStream,
-};
+use tokio::{io::AsyncReadExt, net::TcpStream};
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum MessageId {
@@ -76,22 +73,4 @@ impl TryFrom<u8> for MessageId {
             v => anyhow::bail!("Invalid message id: {}", v),
         }
     }
-}
-
-pub async fn wait_for_bitfield(stream: &mut TcpStream) -> Result<Vec<u8>> {
-    let msg = Message::from_stream(stream).await?;
-    anyhow::ensure!(msg.id == MessageId::Bitfield);
-    Ok(msg.payload)
-}
-
-pub async fn send_interested(stream: &mut TcpStream) -> Result<()> {
-    let msg = Message::new(MessageId::Interested, Vec::new());
-    stream.write_all(&msg.into_bytes()).await?;
-    Ok(())
-}
-
-pub async fn wait_for_unchoke(stream: &mut TcpStream) -> Result<()> {
-    let msg = Message::from_stream(stream).await?;
-    anyhow::ensure!(msg.id == MessageId::Unchoke);
-    Ok(())
 }
