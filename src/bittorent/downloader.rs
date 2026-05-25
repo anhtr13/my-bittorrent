@@ -1,4 +1,9 @@
-use std::{fs::OpenOptions, io::Write, sync::Arc, time::Duration};
+use std::{
+    fs::{File, OpenOptions},
+    io::Write,
+    sync::Arc,
+    time::Duration,
+};
 
 use anyhow::Result;
 use tokio::{
@@ -76,14 +81,16 @@ impl Downloader {
     pub async fn download(&mut self, output: Option<&str>) -> Result<()> {
         self.keep_peers_alive();
         let total_pieces = self.info.pieces.len();
+        let output = output.unwrap_or(&self.info.name);
+        let mut file = OpenOptions::new().create(true).append(true).open(output)?;
         for idx in 0..total_pieces {
-            self.download_piece(idx as u32, output).await?;
+            self.download_piece(idx as u32, &mut file).await?;
             println!("Downloaded {}/{} pieces", idx + 1, total_pieces);
         }
         Ok(())
     }
 
-    pub async fn download_piece(&mut self, piece_index: u32, output: Option<&str>) -> Result<()> {
+    pub async fn download_piece(&mut self, piece_index: u32, output: &mut File) -> Result<()> {
         let Some(piece_hash) = self.info.pieces.get(piece_index as usize) else {
             anyhow::bail!("piece_index out of range");
         };
@@ -160,15 +167,13 @@ impl Downloader {
         let checksum = sha1_hash(&piece);
         anyhow::ensure!(&checksum == piece_hash, "checksum miss match");
 
-        let output = output.unwrap_or(&self.info.name);
-        let mut file = OpenOptions::new().create(true).append(true).open(output)?;
-        file.write_all(&piece)?;
+        output.write_all(&piece)?;
 
         self.retain_peers().await;
         Ok(())
     }
 
-    pub fn keep_peers_alive(&self) {
+    fn keep_peers_alive(&self) {
         for peer in self.peers.iter() {
             let mut interval = time::interval(KEEPALIVE_INTERVAL);
             let peer = peer.clone();

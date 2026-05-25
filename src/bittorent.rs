@@ -4,6 +4,8 @@ mod magnet;
 mod peer;
 mod torrent;
 
+use std::fs::OpenOptions;
+
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use sha1::{Digest, Sha1};
@@ -137,11 +139,15 @@ impl Cli {
                     true,
                 )
                 .await?;
+                let output = output.as_ref().unwrap_or(&torrent.info.name);
+                let mut file = OpenOptions::new()
+                    .create(true)
+                    .write(true)
+                    .truncate(true)
+                    .open(output)?;
                 let mut downloader = Downloader::new(addrs, torrent.info);
                 downloader.establish_peers().await;
-                downloader
-                    .download_piece(piece_index, output.as_deref())
-                    .await?;
+                downloader.download_piece(piece_index, &mut file).await?;
                 Ok(())
             }
             Command::Download { output, torrent } => {
@@ -233,21 +239,15 @@ impl Cli {
                     extension::hanshake(&mut stream, &magnet.info_hash).await?;
                 let info =
                     extension::request_torrent_info(&mut stream, &ext_handshake_meta).await?;
-                let (_, addrs) = discover_peers(
-                    &magnet.tracker_url,
-                    &info.hash,
-                    6881,
-                    0,
-                    0,
-                    info.length,
-                    true,
-                )
-                .await?;
+                let output = output.as_ref().unwrap_or(&info.name);
+                let mut file = OpenOptions::new()
+                    .create(true)
+                    .write(true)
+                    .truncate(true)
+                    .open(output)?;
                 let mut downloader = Downloader::new(addrs, info);
                 downloader.establish_peers().await;
-                downloader
-                    .download_piece(piece_index, output.as_deref())
-                    .await?;
+                downloader.download_piece(piece_index, &mut file).await?;
                 Ok(())
             }
             Command::MagnetDownload { output, link } => {
@@ -267,16 +267,6 @@ impl Cli {
                     extension::hanshake(&mut stream, &magnet.info_hash).await?;
                 let info =
                     extension::request_torrent_info(&mut stream, &ext_handshake_meta).await?;
-                let (_, addrs) = discover_peers(
-                    &magnet.tracker_url,
-                    &info.hash,
-                    6881,
-                    0,
-                    0,
-                    info.length,
-                    true,
-                )
-                .await?;
                 let mut downloader = Downloader::new(addrs, info);
                 downloader.establish_peers().await;
                 downloader.download(output.as_deref()).await?;
