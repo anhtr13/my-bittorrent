@@ -25,10 +25,10 @@ impl Info {
         let Some(Bencoding::Integer(plength)) = dict.remove("piece length") else {
             anyhow::bail!("piece length must be encode as integer")
         };
-        let Some(Bencoding::String(name)) = dict.remove("name") else {
+        let Some(Bencoding::Raw(name)) = dict.remove("name") else {
             anyhow::bail!("name must be encode as string")
         };
-        let Some(Bencoding::String(pieces)) = dict.remove("pieces") else {
+        let Some(Bencoding::Raw(pieces)) = dict.remove("pieces") else {
             anyhow::bail!("pieces must be encode as string")
         };
         let pieces: Result<Vec<_>> = pieces
@@ -60,7 +60,7 @@ impl Torrent {
         let Bencoding::Dictionary(mut dict) = Bencoding::decode(data)? else {
             anyhow::bail!("torrent must be encode as dictionary");
         };
-        let Some(Bencoding::String(announce)) = dict.remove("announce") else {
+        let Some(Bencoding::Raw(announce)) = dict.remove("announce") else {
             anyhow::bail!("announce must be encode as string")
         };
         let Some(bvalue) = dict.remove("info") else {

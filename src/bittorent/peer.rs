@@ -44,7 +44,7 @@ pub async fn discover_peers(
     let Some(Bencoding::Integer(interval)) = dict.get("interval") else {
         anyhow::bail!("failed to parse tracker response");
     };
-    let Some(Bencoding::String(peers)) = dict.get("peers") else {
+    let Some(Bencoding::Raw(peers)) = dict.get("peers") else {
         anyhow::bail!("failed to parse tracker response");
     };
     let interval = *interval as u64;

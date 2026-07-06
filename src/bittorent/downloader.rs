@@ -15,7 +15,7 @@ use tokio::{
 use crate::bittorent::{peer::Peer, sha1_hash, torrent::Info};
 
 const BLOCK_SIZE: u32 = 16 * 1024;
-const MAX_CONNECTING_PEERS: usize = 24;
+const MAX_CONNECTING_PEERS: usize = 12;
 const ESTABLISH_PEER_TIMEOUT: Duration = Duration::from_secs(10);
 const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(120);
 

@@ -9,7 +9,7 @@ use bytes::Buf;
 
 #[derive(Debug, PartialEq)]
 pub enum Bencoding {
-    String(Vec<u8>),
+    Raw(Vec<u8>),
     Integer(i64),
     List(Vec<Bencoding>),
     Dictionary(BTreeMap<String, Bencoding>),
@@ -18,7 +18,7 @@ pub enum Bencoding {
 impl Display for Bencoding {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::String(s) => {
+            Self::Raw(s) => {
                 let s = match str::from_utf8(s) {
                     Ok(s) => s,
                     Err(_) => &hex::encode(s),
@@ -83,7 +83,7 @@ impl Bencoding {
                 let mut dict = BTreeMap::new();
                 while cur.try_get_u8()? != b'e' {
                     cur.set_position(cur.position() - 1);
-                    let Bencoding::String(key) = Self::decode_from_cursor(cur)? else {
+                    let Bencoding::Raw(key) = Self::decode_from_cursor(cur)? else {
                         anyhow::bail!("key in dictionary must be string");
                     };
                     let key = String::from_utf8(key)?;
@@ -103,14 +103,14 @@ impl Bencoding {
                     .context("cannot parse string length")?;
                 let mut s = vec![0u8; len];
                 cur.read_exact(&mut s).context("failed to parse string")?;
-                Ok(Self::String(s))
+                Ok(Self::Raw(s))
             }
         }
     }
 
     pub fn encode(&self) -> Vec<u8> {
         match self {
-            Self::String(s) => {
+            Self::Raw(s) => {
                 let mut bytes = s.len().to_string().into_bytes();
                 bytes.push(b':');
                 bytes.extend(s);
@@ -133,7 +133,7 @@ impl Bencoding {
             Self::Dictionary(d) => {
                 let mut bytes = vec![b'd'];
                 for (key, val) in d.iter() {
-                    bytes.extend(Self::String(key.clone().into_bytes()).encode());
+                    bytes.extend(Self::Raw(key.clone().into_bytes()).encode());
                     bytes.extend(val.encode());
                 }
                 bytes.push(b'e');
@@ -153,13 +153,13 @@ mod test {
 
     #[test]
     fn test_string() -> Result<()> {
-        let bvalue = Bencoding::String(b"Hello world".to_vec());
+        let bvalue = Bencoding::Raw(b"Hello world".to_vec());
         let encoded = bvalue.encode();
         assert_eq!(encoded, b"11:Hello world");
 
         let encoded = b"15:bencoded string".to_vec();
         let decoded = Bencoding::decode(encoded)?;
-        assert_eq!(decoded, Bencoding::String(b"bencoded string".to_vec()));
+        assert_eq!(decoded, Bencoding::Raw(b"bencoded string".to_vec()));
 
         Ok(())
     }
@@ -180,12 +180,12 @@ mod test {
     #[test]
     fn test_list() {
         let bvalue = Bencoding::List(vec![
-            Bencoding::String(b"hello world".to_vec()),
+            Bencoding::Raw(b"hello world".to_vec()),
             Bencoding::Integer(123456),
-            Bencoding::List(vec![Bencoding::String(b"inside nested list".to_vec())]),
+            Bencoding::List(vec![Bencoding::Raw(b"inside nested list".to_vec())]),
             Bencoding::Dictionary(BTreeMap::from([(
                 String::from("wololo"),
-                Bencoding::String(b"inside nested dictionary".to_vec()),
+                Bencoding::Raw(b"inside nested dictionary".to_vec()),
             )])),
         ]);
 
@@ -200,18 +200,18 @@ mod test {
         let bvalue = Bencoding::Dictionary(BTreeMap::from([
             (
                 String::from("string"),
-                Bencoding::String(b"hello world".to_vec()),
+                Bencoding::Raw(b"hello world".to_vec()),
             ),
             (String::from("integer"), Bencoding::Integer(12345678)),
             (
                 String::from("list"),
-                Bencoding::List(vec![Bencoding::String(b"inside nested list".to_vec())]),
+                Bencoding::List(vec![Bencoding::Raw(b"inside nested list".to_vec())]),
             ),
             (
                 String::from("dictionary"),
                 Bencoding::Dictionary(BTreeMap::from([(
                     String::from("wololo"),
-                    Bencoding::String(b"inside nested dictionary".to_vec()),
+                    Bencoding::Raw(b"inside nested dictionary".to_vec()),
                 )])),
             ),
         ]));
@@ -227,18 +227,18 @@ mod test {
         let bvalue = Bencoding::Dictionary(BTreeMap::from([
             (
                 String::from("string"),
-                Bencoding::String(b"hello world".to_vec()),
+                Bencoding::Raw(b"hello world".to_vec()),
             ),
             (String::from("integer"), Bencoding::Integer(12345678)),
             (
                 String::from("list"),
-                Bencoding::List(vec![Bencoding::String(b"inside nested list".to_vec())]),
+                Bencoding::List(vec![Bencoding::Raw(b"inside nested list".to_vec())]),
             ),
             (
                 String::from("dictionary"),
                 Bencoding::Dictionary(BTreeMap::from([(
                     String::from("wololo"),
-                    Bencoding::String(b"inside nested dictionary".to_vec()),
+                    Bencoding::Raw(b"inside nested dictionary".to_vec()),
                 )])),
             ),
         ]));
